@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WatchExchange Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=Inter:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0c0d11; --panel:#15171f; --panel-2:#1b1e28; --line:#272b37;
+    --ink:#ece8dd; --muted:#8b8f9d; --faint:#5b606e;
+    --gilt:#c9a227; --gilt-soft:#e3c25a; --indigo:#6f8cff; --indigo-soft:#9db0ff;
+    --live:#3ec07a; --red:#e0685f;
+  }
+  *{box-sizing:border-box} html,body{margin:0}
+  body{
+    background:radial-gradient(120% 80% at 50% -10%, #16181f 0%, var(--bg) 55%) fixed, var(--bg);
+    color:var(--ink); font-family:"Inter",system-ui,sans-serif; -webkit-font-smoothing:antialiased;
+    line-height:1.45; padding:0 0 calc(48px + env(safe-area-inset-bottom));
+  }
+  .wrap{max-width:560px;margin:0 auto;padding:0 16px}
+  a{color:var(--indigo-soft)}
+
+  header{position:sticky;top:0;z-index:10;background:linear-gradient(var(--bg) 72%, transparent);
+    padding:calc(18px + env(safe-area-inset-top)) 0 14px}
+  .brand{display:flex;align-items:center;gap:11px}
+  .titles h1{font-family:"Fraunces",serif;font-weight:900;font-size:22px;letter-spacing:-.01em;margin:0;line-height:1}
+  .titles .sub{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);margin-top:5px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--live);box-shadow:0 0 0 0 rgba(62,192,122,.55);animation:pulse 2.6s infinite}
+  .dot.stale{background:var(--faint);animation:none}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(62,192,122,.5)}70%{box-shadow:0 0 0 7px rgba(62,192,122,0)}100%{box-shadow:0 0 0 0 rgba(62,192,122,0)}}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:15px;margin-top:11px}
+  .eyebrow{font-family:"Space Mono",monospace;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin:0 0 11px}
+  .chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}
+  .chip{display:inline-flex;align-items:center;gap:8px;background:var(--panel-2);border:1px solid var(--line);
+    border-radius:8px;padding:6px 8px 6px 10px;font-size:13px}
+  .chip .name{color:var(--ink)} .chip .ref{font-family:"Space Mono",monospace;font-size:12px;color:var(--gilt-soft)}
+  .chip.user .at{font-family:"Space Mono",monospace;color:var(--indigo-soft);font-size:12px}
+  .chip .x{cursor:pointer;color:var(--faint);font-size:15px;line-height:1;padding:0 2px;border:0;background:none}
+  .chip .x:hover{color:var(--red)}
+  .empty{color:var(--faint);font-size:12.5px;margin:0 0 12px}
+
+  .addrow{display:flex;gap:8px}
+  input[type=text]{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:9px;
+    color:var(--ink);font-family:inherit;font-size:14px;padding:10px 12px}
+  input[type=text]:focus{outline:none;border-color:var(--gilt)}
+  input::placeholder{color:var(--faint)}
+  .btn{background:var(--panel-2);border:1px solid var(--line);color:var(--ink);font-family:inherit;
+    font-size:14px;font-weight:600;border-radius:9px;padding:10px 14px;cursor:pointer;white-space:nowrap}
+  .btn:hover{border-color:var(--gilt);color:var(--gilt-soft)}
+  .btn.ghost{font-weight:500;font-size:12.5px;padding:7px 11px}
+  .hint{color:var(--muted);font-size:11.5px;margin:9px 0 0}
+
+  .toolbar{display:flex;gap:8px;align-items:center;margin-top:11px}
+  .toolbar .grow{flex:1}
+  .toast{font-size:12px;color:var(--muted);min-height:16px;margin-top:8px}
+  .toast.err{color:var(--red)} .toast.ok{color:var(--live)}
+
+  .feed-head{display:flex;align-items:baseline;justify-content:space-between;margin:26px 2px 12px}
+  .feed-head h2{font-family:"Fraunces",serif;font-weight:600;font-size:16px;margin:0}
+  .feed-head .count{font-family:"Space Mono",monospace;font-size:11px;color:var(--faint)}
+
+  .alert{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:16px;
+    padding:14px;margin-bottom:11px;border-left:3px solid var(--gilt)}
+  .alert.user{border-left-color:var(--indigo)} .alert.both{border-left-color:var(--gilt)}
+  .reason{display:inline-flex;align-items:center;gap:6px;font-family:"Space Mono",monospace;font-size:10.5px;
+    letter-spacing:.06em;text-transform:uppercase;font-weight:700}
+  .reason.watch,.reason.both{color:var(--gilt-soft)} .reason.user{color:var(--indigo-soft)}
+  .alert h3{font-weight:600;font-size:14.5px;margin:8px 0 0;line-height:1.32}
+  .alert h3 a{color:var(--ink);text-decoration:none} .alert h3 a:hover{color:var(--gilt-soft)}
+  .meta{display:flex;flex-wrap:wrap;align-items:center;gap:9px;margin-top:9px;font-size:12px;color:var(--muted)}
+  .meta .sep{color:var(--faint)} .meta .price{font-family:"Space Mono",monospace;color:var(--ink);font-weight:700}
+  .feed-empty{background:var(--panel);border:1px dashed var(--line);border-radius:16px;padding:22px;text-align:center;color:var(--muted);font-size:13px}
+
+  footer{margin-top:22px;text-align:center;color:var(--faint);font-size:11.5px;line-height:1.7}
+  footer .mono{font-family:"Space Mono",monospace}
+  @media (prefers-reduced-motion: reduce){.dot{animation:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true" style="flex:none">
+        <circle cx="20" cy="20" r="18" fill="#14161d" stroke="#c9a227" stroke-width="1.4"/>
+        <circle cx="20" cy="20" r="13.5" fill="none" stroke="#2b2f3b" stroke-width="1"/>
+        <g stroke="#c9a227" stroke-width="1.4" stroke-linecap="round">
+          <line x1="20" y1="6.5" x2="20" y2="9.5"/><line x1="33.5" y1="20" x2="30.5" y2="20"/>
+          <line x1="20" y1="33.5" x2="20" y2="30.5"/><line x1="6.5" y1="20" x2="9.5" y2="20"/></g>
+        <line x1="20" y1="20" x2="20" y2="11.5" stroke="#e3c25a" stroke-width="1.6" stroke-linecap="round"/>
+        <line x1="20" y1="20" x2="26" y2="22.5" stroke="#e3c25a" stroke-width="1.6" stroke-linecap="round"/>
+        <circle cx="20" cy="20" r="1.6" fill="#e3c25a"/></svg>
+      <div class="titles" style="flex:1">
+        <h1>WatchExchange Tracker</h1>
+        <div class="sub"><span id="dot" class="dot stale"></span> <span id="status">connecting…</span></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- HUNTING -->
+  <section class="panel">
+    <p class="eyebrow">Hunting — alerts on a match</p>
+    <div id="watch-chips" class="chips"></div>
+    <div class="addrow">
+      <input id="watch-input" type="text" placeholder="model or ref — e.g. submariner 16610" autocomplete="off">
+      <button class="btn" onclick="addWatch()">Add</button>
+    </div>
+    <p class="hint">All words must appear in the post. Add an exclusion with a minus, e.g. <span class="mono">submariner -date</span>.</p>
+  </section>
+
+  <!-- FOLLOWING -->
+  <section class="panel">
+    <p class="eyebrow">Following — alerts on any post</p>
+    <div id="user-chips" class="chips"></div>
+    <div class="addrow">
+      <input id="user-input" type="text" placeholder="reddit username — e.g. some_seller" autocomplete="off">
+      <button class="btn" onclick="addUser()">Add</button>
+    </div>
+  </section>
+
+  <div class="toolbar">
+    <button class="btn ghost" onclick="sendTest()">Send test alert</button>
+    <span class="grow"></span>
+    <span id="webhook-warn" class="toast err" style="margin:0"></span>
+  </div>
+  <div id="toast" class="toast"></div>
+
+  <!-- ALERTS -->
+  <div class="feed-head">
+    <h2>Recent alerts</h2>
+    <span id="alert-count" class="count"></span>
+  </div>
+  <div id="feed"></div>
+
+  <footer>
+    Reads Reddit's public RSS — <span class="mono">no credentials</span>.<br>
+    Alerts arrive on your phone through the Discord app.
+  </footer>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+function toast(msg, kind=""){ const t=$("#toast"); t.textContent=msg; t.className="toast "+kind; if(msg) setTimeout(()=>{if(t.textContent===msg){t.textContent="";t.className="toast";}},4000); }
+function ago(ts){ if(!ts) return "never"; const s=Math.floor(Date.now()/1000-ts); if(s<60)return s+"s ago"; if(s<3600)return Math.floor(s/60)+"m ago"; if(s<86400)return Math.floor(s/3600)+"h ago"; return Math.floor(s/86400)+"d ago"; }
+function esc(x){ return (x||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+async function api(path, opts){ const r=await fetch(path,opts); if(!r.ok){ let e="Request failed"; try{e=(await r.json()).error||e;}catch{} throw new Error(e);} return r.status===204?null:r.json(); }
+
+function parseWatch(raw){
+  const terms=[], exclude=[];
+  raw.trim().split(/\s+/).forEach(w=>{ if(w.startsWith("-")&&w.length>1) exclude.push(w.slice(1)); else if(w) terms.push(w); });
+  return {terms, exclude};
+}
+
+async function loadState(){
+  try{
+    const s = await api("/api/state");
+    // status
+    const stale = !s.last_poll || (Date.now()/1000 - s.last_poll) > s.poll_interval*2;
+    $("#dot").className = "dot" + (stale ? " stale" : "");
+    $("#status").textContent = `Watching r/${s.subreddit} · last check ${ago(s.last_poll)}`;
+    $("#webhook-warn").textContent = s.webhook_set ? "" : "⚠ no Discord webhook set on the server";
+    // watches
+    $("#watch-chips").innerHTML = s.watches.length ? s.watches.map(w=>{
+      const ref = w.terms.slice(1).join(" ");
+      const ex = w.exclude.length ? ` <span style="color:var(--faint)">−${esc(w.exclude.join(" "))}</span>`:"";
+      return `<span class="chip"><span class="name">${esc(w.terms[0]||w.label)}</span>${ref?`<span class="ref">${esc(ref)}</span>`:""}${ex}<button class="x" title="remove" onclick="delWatch(${w.id})">×</button></span>`;
+    }).join("") : `<p class="empty">No watches yet. Add a model or reference below to start hunting.</p>`;
+    // users
+    $("#user-chips").innerHTML = s.users.length ? s.users.map(u=>
+      `<span class="chip user"><span class="at">u/${esc(u)}</span><button class="x" title="remove" onclick="delUser('${esc(u)}')">×</button></span>`
+    ).join("") : `<p class="empty">Not following anyone yet. Add a username to get every post they make.</p>`;
+  }catch(e){ $("#status").textContent="connection error"; }
+}
+
+async function loadAlerts(){
+  try{
+    const a = await api("/api/alerts?limit=40");
+    $("#alert-count").textContent = a.length ? `${a.length} shown` : "";
+    $("#feed").innerHTML = a.length ? a.map(x=>{
+      const label = x.kind==="user"?"Followed user":(x.kind==="both"?"Watch + user":"Watch match");
+      return `<article class="alert ${x.kind}">
+        <span class="reason ${x.kind}">● ${label}</span>
+        <h3><a href="${esc(x.link)}" target="_blank" rel="noopener">${esc(x.title)}</a></h3>
+        <div class="meta"><span>u/${esc(x.author)}</span>${x.price?`<span class="sep">·</span><span class="price">${esc(x.price)}</span>`:""}<span class="sep">·</span><span>${ago(x.ts)}</span></div>
+      </article>`;
+    }).join("") : `<div class="feed-empty">No alerts yet. When a matching watch or a followed user posts, it shows here — and pings your Discord.</div>`;
+  }catch(e){}
+}
+
+async function addWatch(){
+  const inp=$("#watch-input"), raw=inp.value.trim(); if(!raw) return;
+  const {terms,exclude}=parseWatch(raw);
+  try{ await api("/api/watches",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({terms,exclude})}); inp.value=""; toast("Watch added — live from the next check.","ok"); loadState(); }
+  catch(e){ toast(e.message,"err"); }
+}
+async function delWatch(id){ try{ await api(`/api/watches/${id}`,{method:"DELETE"}); loadState(); }catch(e){ toast(e.message,"err"); } }
+async function addUser(){
+  const inp=$("#user-input"), name=inp.value.trim(); if(!name) return;
+  try{ await api("/api/users",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:name})}); inp.value=""; toast("Now following u/"+name.replace(/^\/?u\//,""),"ok"); loadState(); }
+  catch(e){ toast(e.message,"err"); }
+}
+async function delUser(name){ try{ await api(`/api/users/by-name/${encodeURIComponent(name)}`,{method:"DELETE"}); loadState(); }catch(e){ toast(e.message,"err"); } }
+async function sendTest(){ try{ await api("/api/test",{method:"POST"}); toast("Test sent — check Discord.","ok"); }catch(e){ toast(e.message,"err"); } }
+
+$("#watch-input").addEventListener("keydown",e=>{if(e.key==="Enter")addWatch();});
+$("#user-input").addEventListener("keydown",e=>{if(e.key==="Enter")addUser();});
+
+loadState(); loadAlerts();
+setInterval(loadState, 8000);
+setInterval(loadAlerts, 12000);
+</script>
+</body>
+</html>
