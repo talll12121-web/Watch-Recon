@@ -52,6 +52,11 @@ _state = {"last_poll": None, "last_error": None}
 
 # ----------------------------------------------------------------------------- database
 def db():
+    # A cloud volume (e.g. Railway /data) may be absent or mount after boot; create the
+    # parent dir so SQLite can't hard-fail with "unable to open database file".
+    d = os.path.dirname(DB_PATH)
+    if d:
+        os.makedirs(d, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
