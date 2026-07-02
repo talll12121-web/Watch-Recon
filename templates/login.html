@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WatchExchange Tracker — Sign in</title>
+<meta name="theme-color" content="#0c0d11">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="WatchTracker">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=Inter:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0c0d11; --panel:#15171f; --panel-2:#1b1e28; --line:#272b37;
+    --ink:#ece8dd; --muted:#8b8f9d; --faint:#5b606e;
+    --gilt:#c9a227; --gilt-soft:#e3c25a; --indigo:#6f8cff; --indigo-soft:#9db0ff;
+    --red:#e0685f;
+  }
+  *{box-sizing:border-box} html,body{margin:0}
+  body{
+    min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:radial-gradient(120% 80% at 50% -10%, #16181f 0%, var(--bg) 55%) fixed, var(--bg);
+    color:var(--ink); font-family:"Inter",system-ui,sans-serif; -webkit-font-smoothing:antialiased;
+    padding:24px calc(20px + env(safe-area-inset-left)) 24px calc(20px + env(safe-area-inset-right));
+  }
+  .card{width:100%;max-width:380px;background:var(--panel);border:1px solid var(--line);
+    border-radius:18px;padding:26px 22px 24px}
+  .brand{display:flex;align-items:center;gap:11px;margin-bottom:20px}
+  .mark{width:38px;height:38px;border-radius:10px;background:linear-gradient(150deg,var(--gilt-soft),var(--gilt));
+    display:flex;align-items:center;justify-content:center;font-family:"Fraunces",serif;font-weight:900;
+    color:#1a1206;font-size:20px}
+  h1{font-family:"Fraunces",serif;font-weight:900;font-size:19px;letter-spacing:-.01em;margin:0;line-height:1.1}
+  .sub{font-size:12.5px;color:var(--muted);margin-top:3px}
+  label{display:block;font-family:"Space Mono",monospace;font-size:10.5px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--faint);margin:0 0 8px}
+  input[type=password]{width:100%;background:var(--panel-2);border:1px solid var(--line);color:var(--ink);
+    border-radius:11px;padding:13px 14px;font-size:16px;font-family:inherit;outline:none}
+  input[type=password]:focus{border-color:var(--indigo)}
+  button{width:100%;margin-top:14px;background:linear-gradient(150deg,var(--gilt-soft),var(--gilt));
+    color:#1a1206;border:none;border-radius:11px;padding:13px;font-size:15px;font-weight:600;
+    font-family:inherit;cursor:pointer}
+  button:active{transform:translateY(1px)}
+  .err{display:none;margin:12px 0 0;padding:10px 12px;border-radius:10px;font-size:13px;
+    background:rgba(224,104,95,.12);border:1px solid rgba(224,104,95,.4);color:#f0b3ad}
+  .err.show{display:block}
+</style>
+</head>
+<body>
+  <form class="card" method="POST" action="/login">
+    <div class="brand">
+      <div class="mark">W</div>
+      <div>
+        <h1>WatchExchange Tracker</h1>
+        <div class="sub">Enter your password to continue</div>
+      </div>
+    </div>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password"
+           autofocus required>
+    <input type="hidden" name="next" id="next">
+    <div class="err" id="err">Incorrect password. Try again.</div>
+    <button type="submit">Sign in</button>
+  </form>
+<script>
+  const q = new URLSearchParams(location.search);
+  if (q.get("err")) document.getElementById("err").classList.add("show");
+  document.getElementById("next").value = q.get("next") || "/";
+  // Keep the URL clean so a refresh doesn't re-show the error.
+  if (q.has("err") || q.has("next")) history.replaceState(null, "", "/login");
+</script>
+</body>
+</html>

@@ -18,15 +18,17 @@ import os
 import re
 import json
 import time
+import hashlib
 import sqlite3
 import logging
 import threading
 from functools import wraps
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import requests
 import feedparser
-from flask import Flask, request, jsonify, Response, send_from_directory
+from flask import (Flask, request, jsonify, Response, send_from_directory,
+                   session, redirect, url_for)
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -253,21 +255,62 @@ def poller():
 # ----------------------------------------------------------------------------- flask
 app = Flask(__name__, static_folder="templates", static_url_path="")
 
+# Signed session cookie so the home-screen web app can stay logged in (iOS standalone
+# mode can't show the HTTP Basic Auth dialog). Key is derived from APP_PASSWORD so it
+# stays stable across restarts — no re-login on every deploy — unless SECRET_KEY is set.
+app.secret_key = os.environ.get("SECRET_KEY") or hashlib.sha256(
+    ("watchexchange-tracker::" + APP_PASSWORD).encode()).hexdigest()
+app.config.update(
+    PERMANENT_SESSION_LIFETIME=timedelta(days=365),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    # Secure by default (Railway is HTTPS); set COOKIE_SECURE=false for local http testing.
+    SESSION_COOKIE_SECURE=os.environ.get("COOKIE_SECURE", "true").lower() == "true",
+)
+
 
 def check_auth(u, p): return p == APP_PASSWORD
-def need_auth():
-    return Response("Authentication required.", 401, {"WWW-Authenticate": 'Basic realm="Tracker"'})
+
+
+def _authed():
+    if not APP_PASSWORD:
+        return True
+    if session.get("authed"):
+        return True
+    auth = request.authorization          # keep Basic Auth working for curl/API clients
+    return bool(auth and check_auth(auth.username, auth.password))
 
 
 def protected(f):
     @wraps(f)
     def w(*a, **k):
-        if APP_PASSWORD:
-            auth = request.authorization
-            if not auth or not check_auth(auth.username, auth.password):
-                return need_auth()
-        return f(*a, **k)
+        if _authed():
+            return f(*a, **k)
+        if request.path.startswith("/api"):
+            return jsonify({"error": "unauthorized"}), 401
+        return redirect(url_for("login", next=request.path))
     return w
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not APP_PASSWORD or _authed():
+        return redirect(url_for("index"))
+    if request.method == "POST":
+        if check_auth(None, (request.form.get("password") or "").strip()):
+            session.permanent = True
+            session["authed"] = True
+            dest = request.form.get("next") or "/"
+            return redirect(dest if dest.startswith("/") else "/")
+        # Re-show the form with an error flag (GET, so refresh won't resubmit).
+        return redirect(url_for("login", err=1, next=request.form.get("next") or ""))
+    return send_from_directory("templates", "login.html")
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
 
 
 @app.route("/")
