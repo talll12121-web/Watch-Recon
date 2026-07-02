@@ -36,7 +36,7 @@ load_dotenv()
 # ----------------------------------------------------------------------------- config
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 SUBREDDIT = os.environ.get("SUBREDDIT", "Watchexchange")
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "180"))
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "120"))
 REQUIRE_TAGS = [t.strip().upper() for t in os.environ.get("WATCH_REQUIRE_TAGS", "WTS,WTT").split(",") if t.strip()]
 MAX_AGE_MIN = int(os.environ.get("MAX_POST_AGE_MINUTES", "720"))
 SCAN_USER_FEEDS = os.environ.get("SCAN_FOLLOWED_USER_FEEDS", "true").lower() == "true"
