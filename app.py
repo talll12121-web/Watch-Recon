@@ -19,6 +19,7 @@ import re
 import html
 import json
 import time
+import random
 import calendar
 import hashlib
 import sqlite3
@@ -200,16 +201,16 @@ def fetch_page(q, after_ts, before_ts):
     # ok=False means rate-limited/errored out → caller stops and keeps partial data.
     params = {"subreddit": SUBREDDIT, "q": q, "after": int(after_ts), "before": int(before_ts),
               "size": 100, "sort": "desc", "sort_type": "created_utc"}
-    for attempt in range(3):
+    for attempt in range(5):
         try:
             r = requests.get(PULLPUSH_API, headers={"User-Agent": USER_AGENT},
                              params=params, timeout=40)
         except Exception as e:
-            log.warning("pullpush error: %s", e); time.sleep(3 * (attempt + 1)); continue
+            log.warning("pullpush error: %s", e); time.sleep(3 * (attempt + 1) + random.random()); continue
         if r.status_code == 200:
             return r.json().get("data", []), True
-        if r.status_code == 429:
-            time.sleep(4 * (attempt + 1)); continue
+        if r.status_code in (429, 500, 502, 503):        # transient — back off and retry
+            time.sleep(4 * (attempt + 1) + random.random() * 2); continue
         log.warning("pullpush HTTP %s", r.status_code); return [], False
     return [], False
 
@@ -219,11 +220,12 @@ def price_series(watch, force=False):
     tl = [t.lower() for t in terms]
     exclude = [x.lower() for x in watch.get("exclude", [])]
     key = "||".join(sorted(tl)) + "##" + "|".join(sorted(exclude))
-    if not force:
-        with db() as c:
-            row = c.execute("SELECT ts, json FROM price_cache WHERE k=?", (key,)).fetchone()
-        if row and (time.time() - row["ts"]) < PRICE_CACHE_TTL:
-            out = json.loads(row["json"]); out["cached"] = True; return out
+    with db() as c:
+        row = c.execute("SELECT ts, json FROM price_cache WHERE k=?", (key,)).fetchone()
+    prev = json.loads(row["json"]) if row else None
+    if prev and not force and (time.time() - row["ts"]) < PRICE_CACHE_TTL:
+        prev["cached"] = True
+        return prev
 
     # Query pullpush on the wordy (non-numeric) terms for a broad-but-relevant net, then
     # client-filter on ALL terms by substring so reference variants (116610 -> 116610LN) match.
@@ -272,11 +274,25 @@ def price_series(watch, force=False):
         "source": "r/WatchExchange price-range flair (midpoint), via pullpush.io",
         "note": "Asking prices from listings — not verified sold prices.",
         "points": points, "listings": total, "scanned": scanned, "truncated": truncated,
-        "generated": time.time(), "cached": False,
+        "generated": time.time(), "cached": False, "stale": False,
     }
-    with db() as c:
-        c.execute("INSERT OR REPLACE INTO price_cache (k, ts, json) VALUES (?,?,?)",
-                  (key, time.time(), json.dumps(result)))
+    if points:
+        with db() as c:
+            c.execute("INSERT OR REPLACE INTO price_cache (k, ts, json) VALUES (?,?,?)",
+                      (key, time.time(), json.dumps(result)))
+        return result
+
+    # No usable data this run. Prefer a previously-fetched series over an empty
+    # "rate-limited" screen, and don't let a transient 429 poison the cache for 12h —
+    # only cache an empty answer when the archive actually responded (not truncated).
+    if prev and prev.get("points"):
+        prev["cached"] = True
+        prev["stale"] = True
+        return prev
+    if not truncated:
+        with db() as c:
+            c.execute("INSERT OR REPLACE INTO price_cache (k, ts, json) VALUES (?,?,?)",
+                      (key, time.time(), json.dumps(result)))
     return result
 
 

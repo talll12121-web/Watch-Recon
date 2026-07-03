@@ -291,7 +291,9 @@ function renderPrices(d){
   const line=n>1?`<polyline points="${poly}" fill="none" stroke="#e3c25a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`:"";
   const svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="asking-price chart">${grid}${bands}${line}${dots}${labels}</svg>`;
   const legend=`<div class="legend"><span><i style="background:#e3c25a"></i>Median asking</span><span><i style="background:#c9a227;opacity:.45"></i>Low–high range</span></div>`;
-  const meta=`<div class="chart-meta"><span>${d.listings} priced listing${d.listings===1?"":"s"}</span><span>since ${esc(d.since)}</span>${d.truncated?`<span style="color:var(--red)">partial — archive rate-limited</span>`:""}<span>${esc(d.source)}</span></div>`;
+  const flags=(d.stale?`<span style="color:var(--gilt-soft)">saved data · updated ${ago(d.generated)}</span>`:"")
+    +(d.truncated&&!d.stale?`<span style="color:var(--red)">partial — archive rate-limited</span>`:"");
+  const meta=`<div class="chart-meta"><span>${d.listings} priced listing${d.listings===1?"":"s"}</span><span>since ${esc(d.since)}</span>${flags}<span>${esc(d.source)}</span></div>`;
   $("#pm-body").innerHTML=svg+legend+meta;
 }
 document.addEventListener("keydown",e=>{ if(e.key==="Escape") closePrices(); });
