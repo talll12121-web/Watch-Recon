@@ -47,6 +47,9 @@
   .chip.user .at{font-family:"Space Mono",monospace;color:var(--indigo-soft);font-size:12px}
   .chip .x{cursor:pointer;color:var(--faint);font-size:15px;line-height:1;padding:0 2px;border:0;background:none}
   .chip .x:hover{color:var(--red)}
+  .chip .chart{cursor:pointer;color:var(--gilt-soft);font-family:"Space Mono",monospace;font-size:13px;
+    font-weight:700;line-height:1;padding:0 3px;border:0;background:none}
+  .chip .chart:hover{color:var(--gilt)}
   .empty{color:var(--faint);font-size:12.5px;margin:0 0 12px}
 
   .addrow{display:flex;gap:8px}
@@ -84,6 +87,24 @@
   footer{margin-top:22px;text-align:center;color:var(--faint);font-size:11.5px;line-height:1.7}
   footer .mono{font-family:"Space Mono",monospace}
   @media (prefers-reduced-motion: reduce){.dot{animation:none}}
+
+  .modal{position:fixed;inset:0;z-index:50;display:none;align-items:flex-end;justify-content:center;
+    background:rgba(6,7,10,.66);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
+  .modal.open{display:flex}
+  .sheet{width:100%;max-width:560px;background:var(--panel);border:1px solid var(--line);
+    border-radius:18px 18px 0 0;padding:18px 16px calc(20px + env(safe-area-inset-bottom));
+    max-height:88vh;overflow:auto}
+  @media(min-width:600px){.modal{align-items:center}.sheet{border-radius:18px}}
+  .sheet-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+  .sheet-head h3{font-family:"Fraunces",serif;font-weight:600;font-size:17px;margin:0}
+  .sheet-head .close{background:none;border:0;color:var(--muted);font-size:22px;line-height:1;cursor:pointer;padding:0 2px}
+  .sheet-head .close:hover{color:var(--ink)}
+  .sheet .cap{font-size:12px;color:var(--muted);margin:3px 0 14px}
+  .chart-empty{color:var(--muted);font-size:13px;padding:26px 0;text-align:center}
+  .legend{display:flex;gap:16px;font-size:11px;color:var(--muted);margin-top:10px;flex-wrap:wrap}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+  .chart-meta{display:flex;flex-wrap:wrap;gap:5px 14px;font-family:"Space Mono",monospace;font-size:10.5px;
+    color:var(--faint);margin-top:12px;border-top:1px solid var(--line);padding-top:11px}
 </style>
 </head>
 <body>
@@ -148,6 +169,17 @@
   </footer>
 </div>
 
+<div id="price-modal" class="modal" onclick="if(event.target===this)closePrices()">
+  <div class="sheet">
+    <div class="sheet-head">
+      <h3 id="pm-title">Price history</h3>
+      <button class="close" title="close" onclick="closePrices()">×</button>
+    </div>
+    <p class="cap" id="pm-cap"></p>
+    <div id="pm-body"></div>
+  </div>
+</div>
+
 <script>
 const $ = s => document.querySelector(s);
 function toast(msg, kind=""){ const t=$("#toast"); t.textContent=msg; t.className="toast "+kind; if(msg) setTimeout(()=>{if(t.textContent===msg){t.textContent="";t.className="toast";}},4000); }
@@ -174,7 +206,7 @@ async function loadState(){
     $("#watch-chips").innerHTML = s.watches.length ? s.watches.map(w=>{
       const ref = w.terms.slice(1).join(" ");
       const ex = w.exclude.length ? ` <span style="color:var(--faint)">−${esc(w.exclude.join(" "))}</span>`:"";
-      return `<span class="chip"><span class="name">${esc(w.terms[0]||w.label)}</span>${ref?`<span class="ref">${esc(ref)}</span>`:""}${ex}<button class="x" title="remove" onclick="delWatch(${w.id})">×</button></span>`;
+      return `<span class="chip"><span class="name">${esc(w.terms[0]||w.label)}</span>${ref?`<span class="ref">${esc(ref)}</span>`:""}${ex}<button class="chart" title="price history" onclick="openPrices(${w.id})">$</button><button class="x" title="remove" onclick="delWatch(${w.id})">×</button></span>`;
     }).join("") : `<p class="empty">No watches yet. Add a model or reference below to start hunting.</p>`;
     // users
     $("#user-chips").innerHTML = s.users.length ? s.users.map(u=>
@@ -212,6 +244,57 @@ async function addUser(){
 }
 async function delUser(name){ try{ await api(`/api/users/by-name/${encodeURIComponent(name)}`,{method:"DELETE"}); loadState(); }catch(e){ toast(e.message,"err"); } }
 async function sendTest(){ try{ await api("/api/test",{method:"POST"}); toast("Test sent — check Discord.","ok"); }catch(e){ toast(e.message,"err"); } }
+
+// ---- price history ----
+const MONTHS=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function monLabel(m){ const [y,mo]=m.split("-"); return `${MONTHS[+mo]} '${y.slice(2)}`; }
+function fmtUsd(n){ return "$"+Math.round(n).toLocaleString(); }
+
+async function openPrices(id){
+  const m=$("#price-modal"); m.classList.add("open");
+  $("#pm-title").textContent="Price history";
+  $("#pm-cap").textContent="";
+  $("#pm-body").innerHTML=`<div class="chart-empty">Reading the archive… this can take a few seconds.</div>`;
+  try{ renderPrices(await api(`/api/price-history?watch_id=${id}`)); }
+  catch(e){ $("#pm-body").innerHTML=`<div class="chart-empty">${esc(e.message)}</div>`; }
+}
+function closePrices(){ $("#price-modal").classList.remove("open"); }
+
+function renderPrices(d){
+  $("#pm-title").textContent=d.label;
+  $("#pm-cap").textContent=d.note||"";
+  const pts=d.points||[];
+  if(!pts.length){
+    $("#pm-body").innerHTML=`<div class="chart-empty">No priced listings found for this model${d.truncated?" — the archive was rate-limited, try again shortly.":"."}</div>`;
+    return;
+  }
+  const W=520,H=240,padL=50,padR=14,padT=16,padB=32;
+  const plotW=W-padL-padR, plotH=H-padT-padB, n=pts.length;
+  let lo=Math.min(...pts.map(p=>p.min)), hi=Math.max(...pts.map(p=>p.max));
+  if(lo===hi){ const d0=lo*0.05||1; lo-=d0; hi+=d0; }
+  const pad=(hi-lo)*0.08; lo-=pad; hi+=pad;
+  const xFor=i=> padL + (n===1? plotW/2 : i*plotW/(n-1));
+  const yFor=v=> padT + plotH*(1-(v-lo)/(hi-lo));
+  let grid="";
+  for(let t=0;t<=4;t++){ const val=lo+(hi-lo)*t/4, y=yFor(val);
+    grid+=`<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W-padR}" y2="${y.toFixed(1)}" stroke="#272b37" stroke-width="1"/>`;
+    grid+=`<text x="${padL-7}" y="${(y+3).toFixed(1)}" text-anchor="end" fill="#5b606e" font-size="9" font-family="Space Mono,monospace">${fmtUsd(val)}</text>`;
+  }
+  let bands="",dots="",labels="";
+  pts.forEach((p,i)=>{
+    const x=xFor(i), yMax=yFor(p.max), yMin=yFor(p.min);
+    bands+=`<rect x="${(x-6).toFixed(1)}" y="${yMax.toFixed(1)}" width="12" height="${Math.max(2,yMin-yMax).toFixed(1)}" rx="4" fill="#c9a227" opacity="0.17"/>`;
+    dots+=`<circle cx="${x.toFixed(1)}" cy="${yFor(p.median).toFixed(1)}" r="3.6" fill="#e3c25a"><title>${monLabel(p.month)} — median ${fmtUsd(p.median)} · ${p.count} listing${p.count>1?"s":""} · ${fmtUsd(p.min)}–${fmtUsd(p.max)}</title></circle>`;
+    labels+=`<text x="${x.toFixed(1)}" y="${H-11}" text-anchor="middle" fill="#8b8f9d" font-size="9.5" font-family="Space Mono,monospace">${monLabel(p.month)}</text>`;
+  });
+  const poly=pts.map((p,i)=>`${xFor(i).toFixed(1)},${yFor(p.median).toFixed(1)}`).join(" ");
+  const line=n>1?`<polyline points="${poly}" fill="none" stroke="#e3c25a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`:"";
+  const svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="asking-price chart">${grid}${bands}${line}${dots}${labels}</svg>`;
+  const legend=`<div class="legend"><span><i style="background:#e3c25a"></i>Median asking</span><span><i style="background:#c9a227;opacity:.45"></i>Low–high range</span></div>`;
+  const meta=`<div class="chart-meta"><span>${d.listings} priced listing${d.listings===1?"":"s"}</span><span>since ${esc(d.since)}</span>${d.truncated?`<span style="color:var(--red)">partial — archive rate-limited</span>`:""}<span>${esc(d.source)}</span></div>`;
+  $("#pm-body").innerHTML=svg+legend+meta;
+}
+document.addEventListener("keydown",e=>{ if(e.key==="Escape") closePrices(); });
 
 $("#watch-input").addEventListener("keydown",e=>{if(e.key==="Enter")addWatch();});
 $("#user-input").addEventListener("keydown",e=>{if(e.key==="Enter")addUser();});

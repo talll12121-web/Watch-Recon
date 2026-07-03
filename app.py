@@ -16,8 +16,10 @@ The only secret is your Discord webhook URL (set in the environment).
 
 import os
 import re
+import html
 import json
 import time
+import calendar
 import hashlib
 import sqlite3
 import logging
@@ -44,6 +46,11 @@ USER_AGENT = os.environ.get("USER_AGENT", "watchexchange-tracker/1.0 (personal R
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")          # if set, the UI requires it
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "tracker.db"))
 NOTIFY_ON_FIRST_RUN = os.environ.get("NOTIFY_ON_FIRST_RUN", "false").lower() == "true"
+# Price-history feature: historical asking prices from pullpush.io (Pushshift mirror).
+PRICE_SINCE = os.environ.get("PRICE_SINCE", "2025-01-01")   # earliest month to chart
+PRICE_CACHE_TTL = int(os.environ.get("PRICE_CACHE_TTL_SECONDS", "43200"))  # 12h
+PRICE_MAX_PAGES = int(os.environ.get("PRICE_MAX_PAGES", "6"))   # pullpush pages (100 each) per lookup
+PULLPUSH_API = "https://api.pullpush.io/reddit/search/submission/"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-7s  %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("tracker")
@@ -79,6 +86,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             post_id TEXT, title TEXT, link TEXT, author TEXT,
             price TEXT, reason TEXT, kind TEXT, ts REAL);
+        CREATE TABLE IF NOT EXISTS price_cache (k TEXT PRIMARY KEY, ts REAL, json TEXT);
         """)
     log.info("DB ready at %s", DB_PATH)
 
@@ -149,6 +157,127 @@ def match_watches(title, body, watches):
         if terms and all(t in hay for t in terms) and not any(x.lower() in hay for x in w["exclude"]):
             hits.append(w["label"])
     return hits
+
+
+# ----------------------------------------------------------------------------- price history
+# WatchExchange requires a price-range flair on sell posts (e.g. "$9000-$11999", "$15500+"),
+# which is a far more reliable price signal than the free-text title. We take the flair
+# midpoint, falling back to the largest plausible "$" in the title/body when no flair exists.
+SELL_RE = re.compile(r"\bWT[ST]\b", re.I)                       # WTS or WTT (not WTB)
+FLAIR_RANGE_RE = re.compile(r"\$\s?([\d,]+)\s*[-–]\s*\$?\s?([\d,]+)")
+FLAIR_PLUS_RE = re.compile(r"\$\s?([\d,]+)\s*\+")
+DOLLAR_RE = re.compile(r"\$\s?(\d[\d,]{1,7})")
+
+
+def _num(s): return int(str(s).replace(",", "").replace("$", "").strip())
+
+
+def flair_price(flair):
+    if not flair:
+        return None
+    m = FLAIR_RANGE_RE.search(flair)
+    if m:
+        return (_num(m.group(1)) + _num(m.group(2))) / 2.0
+    m = FLAIR_PLUS_RE.search(flair)
+    if m:
+        return float(_num(m.group(1)))
+    return None
+
+
+def text_price(title, body):
+    vals = [_num(x) for x in DOLLAR_RE.findall(f"{title} {body}")]
+    vals = [v for v in vals if 100 <= v <= 500000]     # drop shipping/fees & junk
+    return float(max(vals)) if vals else None
+
+
+def _median(vals):
+    v = sorted(vals); n = len(v); m = n // 2
+    return float(v[m]) if n % 2 else (v[m - 1] + v[m]) / 2.0
+
+
+def fetch_page(q, after_ts, before_ts):
+    # Newest up to 100 listings in [after_ts, before_ts). Returns (data, ok);
+    # ok=False means rate-limited/errored out → caller stops and keeps partial data.
+    params = {"subreddit": SUBREDDIT, "q": q, "after": int(after_ts), "before": int(before_ts),
+              "size": 100, "sort": "desc", "sort_type": "created_utc"}
+    for attempt in range(3):
+        try:
+            r = requests.get(PULLPUSH_API, headers={"User-Agent": USER_AGENT},
+                             params=params, timeout=40)
+        except Exception as e:
+            log.warning("pullpush error: %s", e); time.sleep(3 * (attempt + 1)); continue
+        if r.status_code == 200:
+            return r.json().get("data", []), True
+        if r.status_code == 429:
+            time.sleep(4 * (attempt + 1)); continue
+        log.warning("pullpush HTTP %s", r.status_code); return [], False
+    return [], False
+
+
+def price_series(watch, force=False):
+    terms = watch["terms"]
+    tl = [t.lower() for t in terms]
+    exclude = [x.lower() for x in watch.get("exclude", [])]
+    key = "||".join(sorted(tl)) + "##" + "|".join(sorted(exclude))
+    if not force:
+        with db() as c:
+            row = c.execute("SELECT ts, json FROM price_cache WHERE k=?", (key,)).fetchone()
+        if row and (time.time() - row["ts"]) < PRICE_CACHE_TTL:
+            out = json.loads(row["json"]); out["cached"] = True; return out
+
+    # Query pullpush on the wordy (non-numeric) terms for a broad-but-relevant net, then
+    # client-filter on ALL terms by substring so reference variants (116610 -> 116610LN) match.
+    # Walk backward in time one page (100) at a time; a few pages keeps us under rate limits.
+    alpha = [t for t in terms if not any(c.isdigit() for c in t)]
+    q = " ".join(alpha or terms)
+    since_ts = calendar.timegm(time.strptime(PRICE_SINCE, "%Y-%m-%d"))
+    before = int(time.time())
+    raw, scanned, truncated = [], 0, False
+    for _ in range(PRICE_MAX_PAGES):
+        data, ok = fetch_page(q, since_ts, before)
+        if not ok:
+            truncated = True; break
+        if not data:
+            break
+        scanned += len(data)
+        raw.extend(data)
+        oldest = min(int(p.get("created_utc", before)) for p in data)
+        if len(data) < 100 or oldest <= since_ts:
+            break
+        before = oldest - 1
+        time.sleep(1.5)
+
+    buckets = {}
+    for p in raw:
+        title = html.unescape(p.get("title", "") or "")
+        body = html.unescape(p.get("selftext", "") or "")
+        if not SELL_RE.search(title):
+            continue
+        hay = (title + " " + body).lower()
+        if not all(t in hay for t in tl) or any(x in hay for x in exclude):
+            continue
+        pr = flair_price(p.get("link_flair_text")) or text_price(title, body)
+        if not pr:
+            continue
+        label = time.strftime("%Y-%m", time.gmtime(int(p.get("created_utc", 0))))
+        buckets.setdefault(label, []).append(pr)
+
+    points = [{"month": lbl, "count": len(v), "median": round(_median(v)),
+               "min": round(min(v)), "max": round(max(v))}
+              for lbl, v in sorted(buckets.items())]
+    total = sum(len(v) for v in buckets.values())
+
+    result = {
+        "label": watch["label"], "terms": terms, "since": PRICE_SINCE,
+        "source": "r/WatchExchange price-range flair (midpoint), via pullpush.io",
+        "note": "Asking prices from listings — not verified sold prices.",
+        "points": points, "listings": total, "scanned": scanned, "truncated": truncated,
+        "generated": time.time(), "cached": False,
+    }
+    with db() as c:
+        c.execute("INSERT OR REPLACE INTO price_cache (k, ts, json) VALUES (?,?,?)",
+                  (key, time.time(), json.dumps(result)))
+    return result
 
 
 # ----------------------------------------------------------------------------- discord
@@ -389,6 +518,20 @@ def api_alerts():
     with db() as c:
         rows = c.execute("SELECT * FROM alerts ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
     return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/price-history")
+@protected
+def api_price_history():
+    wid = request.args.get("watch_id", type=int)
+    w = next((x for x in load_watches() if x["id"] == wid), None)
+    if not w:
+        return jsonify({"error": "Unknown watch."}), 404
+    try:
+        return jsonify(price_series(w, force=bool(request.args.get("refresh"))))
+    except Exception as e:
+        log.exception("price-history failed")
+        return jsonify({"error": f"Price lookup failed: {e}"}), 502
 
 
 @app.route("/api/test", methods=["POST"])
