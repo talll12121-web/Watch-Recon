@@ -268,7 +268,7 @@ function renderPrices(d){
     $("#pm-body").innerHTML=`<div class="chart-empty">No priced listings found for this model${d.truncated?" — the archive was rate-limited, try again shortly.":"."}</div>`;
     return;
   }
-  const W=520,H=240,padL=50,padR=14,padT=16,padB=32;
+  const W=520,H=248,padL=50,padR=14,padT=24,padB=40;
   const plotW=W-padL-padR, plotH=H-padT-padB, n=pts.length;
   let lo=Math.min(...pts.map(p=>p.min)), hi=Math.max(...pts.map(p=>p.max));
   if(lo===hi){ const d0=lo*0.05||1; lo-=d0; hi+=d0; }
@@ -280,16 +280,18 @@ function renderPrices(d){
     grid+=`<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W-padR}" y2="${y.toFixed(1)}" stroke="#272b37" stroke-width="1"/>`;
     grid+=`<text x="${padL-7}" y="${(y+3).toFixed(1)}" text-anchor="end" fill="#5b606e" font-size="9" font-family="Space Mono,monospace">${fmtUsd(val)}</text>`;
   }
-  let bands="",dots="",labels="";
+  let bands="",dots="",vals="",labels="";
   pts.forEach((p,i)=>{
-    const x=xFor(i), yMax=yFor(p.max), yMin=yFor(p.min);
+    const x=xFor(i), yMed=yFor(p.median), yMax=yFor(p.max), yMin=yFor(p.min);
     bands+=`<rect x="${(x-6).toFixed(1)}" y="${yMax.toFixed(1)}" width="12" height="${Math.max(2,yMin-yMax).toFixed(1)}" rx="4" fill="#c9a227" opacity="0.17"/>`;
-    dots+=`<circle cx="${x.toFixed(1)}" cy="${yFor(p.median).toFixed(1)}" r="3.6" fill="#e3c25a"><title>${monLabel(p.month)} — median ${fmtUsd(p.median)} · ${p.count} listing${p.count>1?"s":""} · ${fmtUsd(p.min)}–${fmtUsd(p.max)}</title></circle>`;
-    labels+=`<text x="${x.toFixed(1)}" y="${H-11}" text-anchor="middle" fill="#8b8f9d" font-size="9.5" font-family="Space Mono,monospace">${monLabel(p.month)}</text>`;
+    dots+=`<circle cx="${x.toFixed(1)}" cy="${yMed.toFixed(1)}" r="3.6" fill="#e3c25a"><title>${monLabel(p.month)} — median ${fmtUsd(p.median)} · ${p.count} listing${p.count>1?"s":""} · ${fmtUsd(p.min)}–${fmtUsd(p.max)}</title></circle>`;
+    vals+=`<text x="${x.toFixed(1)}" y="${Math.max(11,yMed-8).toFixed(1)}" text-anchor="middle" fill="#e3c25a" font-size="9.5" font-weight="700" font-family="Space Mono,monospace">${fmtUsd(p.median)}</text>`;
+    labels+=`<text x="${x.toFixed(1)}" y="${H-15}" text-anchor="middle" fill="#8b8f9d" font-size="9.5" font-family="Space Mono,monospace">${monLabel(p.month)}</text>`;
+    labels+=`<text x="${x.toFixed(1)}" y="${H-4}" text-anchor="middle" fill="#5b606e" font-size="8.5" font-family="Space Mono,monospace">${p.count} ask${p.count>1?"s":""}</text>`;
   });
   const poly=pts.map((p,i)=>`${xFor(i).toFixed(1)},${yFor(p.median).toFixed(1)}`).join(" ");
   const line=n>1?`<polyline points="${poly}" fill="none" stroke="#e3c25a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`:"";
-  const svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="asking-price chart">${grid}${bands}${line}${dots}${labels}</svg>`;
+  const svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="asking-price chart">${grid}${bands}${line}${dots}${vals}${labels}</svg>`;
   const legend=`<div class="legend"><span><i style="background:#e3c25a"></i>Median asking</span><span><i style="background:#c9a227;opacity:.45"></i>Low–high range</span></div>`;
   const flags=(d.stale?`<span style="color:var(--gilt-soft)">saved data · updated ${ago(d.generated)}</span>`:"")
     +(d.truncated&&!d.stale?`<span style="color:var(--red)">partial — archive rate-limited</span>`:"");
