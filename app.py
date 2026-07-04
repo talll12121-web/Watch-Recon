@@ -161,9 +161,10 @@ def match_watches(title, body, watches):
 
 
 # ----------------------------------------------------------------------------- price history
-# WatchExchange requires a price-range flair on sell posts (e.g. "$9000-$11999", "$15500+"),
-# which is a far more reliable price signal than the free-text title. We take the flair
-# midpoint, falling back to the largest plausible "$" in the title/body when no flair exists.
+# WatchExchange sell posts carry a price-range flair (e.g. "$9000-$11999", "$15500+"), but
+# that bucket is too wide to trend on. Sellers almost always write the *exact* asking price
+# in the title ("… 126000 … - $7,500"), so we prefer that precise number and use the flair
+# range only to validate it (rejecting a stray "$50 shipping") or as a coarse fallback.
 SELL_RE = re.compile(r"\bWT[ST]\b", re.I)                       # WTS or WTT (not WTB)
 FLAIR_RANGE_RE = re.compile(r"\$\s?([\d,]+)\s*[-–]\s*\$?\s?([\d,]+)")
 FLAIR_PLUS_RE = re.compile(r"\$\s?([\d,]+)\s*\+")
@@ -173,22 +174,34 @@ DOLLAR_RE = re.compile(r"\$\s?(\d[\d,]{1,7})")
 def _num(s): return int(str(s).replace(",", "").replace("$", "").strip())
 
 
-def flair_price(flair):
+def flair_bounds(flair):
+    # (low, high) price bounds from a range flair; high is None for an open "$X+" flair.
     if not flair:
         return None
     m = FLAIR_RANGE_RE.search(flair)
     if m:
-        return (_num(m.group(1)) + _num(m.group(2))) / 2.0
+        return (_num(m.group(1)), _num(m.group(2)))
     m = FLAIR_PLUS_RE.search(flair)
     if m:
-        return float(_num(m.group(1)))
+        return (_num(m.group(1)), None)
     return None
 
 
-def text_price(title, body):
-    vals = [_num(x) for x in DOLLAR_RE.findall(f"{title} {body}")]
-    vals = [v for v in vals if 100 <= v <= 500000]     # drop shipping/fees & junk
-    return float(max(vals)) if vals else None
+def listing_price(title, body, flair):
+    # Prefer the exact price written in the title/body, validated against the flair range;
+    # fall back to the flair midpoint when the text has no corroborating number.
+    cands = [_num(x) for x in DOLLAR_RE.findall(f"{title} {body}")]
+    cands = [v for v in cands if 300 <= v <= 500000]        # drop shipping/fees & junk
+    b = flair_bounds(flair)
+    if b:
+        lo, hi = b
+        cap = hi if hi is not None else lo * 3
+        within = [v for v in cands if lo * 0.85 <= v <= cap * 1.15]
+        if within:
+            mid = (lo + (hi if hi is not None else lo)) / 2.0
+            return float(min(within, key=lambda v: abs(v - mid)))   # the flair-corroborated ask
+        return float((lo + hi) / 2.0) if hi is not None else float(lo)
+    return float(max(cands)) if cands else None                 # no flair — best-effort
 
 
 def _median(vals):
@@ -258,7 +271,7 @@ def price_series(watch, force=False):
         hay = (title + " " + body).lower()
         if not all(t in hay for t in tl) or any(x in hay for x in exclude):
             continue
-        pr = flair_price(p.get("link_flair_text")) or text_price(title, body)
+        pr = listing_price(title, body, p.get("link_flair_text"))
         if not pr:
             continue
         label = time.strftime("%Y-%m", time.gmtime(int(p.get("created_utc", 0))))
