@@ -50,6 +50,8 @@
   .chip .chart{cursor:pointer;color:var(--gilt-soft);font-family:"Space Mono",monospace;font-size:13px;
     font-weight:700;line-height:1;padding:0 3px;border:0;background:none}
   .chip .chart:hover{color:var(--gilt)}
+  .chip .cap-tag{font-family:"Space Mono",monospace;font-size:11px;color:var(--gilt);
+    background:rgba(212,175,55,.12);border:1px solid rgba(212,175,55,.35);border-radius:6px;padding:1px 5px}
   .empty{color:var(--faint);font-size:12.5px;margin:0 0 12px}
 
   .addrow{display:flex;gap:8px}
@@ -75,9 +77,13 @@
   .alert{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:16px;
     padding:14px;margin-bottom:11px;border-left:3px solid var(--gilt)}
   .alert.user{border-left-color:var(--indigo)} .alert.both{border-left-color:var(--gilt)}
+  .alert.deal{border-left-color:var(--gilt);box-shadow:0 0 0 1px rgba(212,175,55,.35),0 0 22px rgba(212,175,55,.12)}
   .reason{display:inline-flex;align-items:center;gap:6px;font-family:"Space Mono",monospace;font-size:10.5px;
     letter-spacing:.06em;text-transform:uppercase;font-weight:700}
-  .reason.watch,.reason.both{color:var(--gilt-soft)} .reason.user{color:var(--indigo-soft)}
+  .reason.watch,.reason.both{color:var(--gilt-soft)} .reason.user{color:var(--indigo-soft)} .reason.deal{color:var(--gilt)}
+  .deal-badge{margin-left:8px;font-family:"Space Mono",monospace;font-size:10.5px;font-weight:700;
+    color:#1a1206;background:var(--gilt);border-radius:6px;padding:2px 7px;letter-spacing:.02em}
+  .meta .med{font-family:"Space Mono",monospace;color:var(--muted)}
   .alert h3{font-weight:600;font-size:14.5px;margin:8px 0 0;line-height:1.32}
   .alert h3 a{color:var(--ink);text-decoration:none} .alert h3 a:hover{color:var(--gilt-soft)}
   .meta{display:flex;flex-wrap:wrap;align-items:center;gap:9px;margin-top:9px;font-size:12px;color:var(--muted)}
@@ -133,10 +139,10 @@
     <p class="eyebrow">Hunting — alerts on a match</p>
     <div id="watch-chips" class="chips"></div>
     <div class="addrow">
-      <input id="watch-input" type="text" placeholder="model or ref — e.g. submariner 16610" autocomplete="off">
+      <input id="watch-input" type="text" placeholder="model or ref — e.g. submariner 16610 <9k" autocomplete="off">
       <button class="btn" onclick="addWatch()">Add</button>
     </div>
-    <p class="hint">All words must appear in the post. Add an exclusion with a minus, e.g. <span class="mono">submariner -date</span>.</p>
+    <p class="hint">All words must appear in the post. Exclude with a minus (<span class="mono">submariner -date</span>); set a budget with <span class="mono">&lt;9000</span> or <span class="mono">&lt;9k</span> to only get pinged under that price.</p>
   </section>
 
   <!-- FOLLOWING -->
@@ -189,9 +195,14 @@ function esc(x){ return (x||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">
 async function api(path, opts){ const r=await fetch(path,opts); if(!r.ok){ let e="Request failed"; try{e=(await r.json()).error||e;}catch{} throw new Error(e);} return r.status===204?null:r.json(); }
 
 function parseWatch(raw){
-  const terms=[], exclude=[];
-  raw.trim().split(/\s+/).forEach(w=>{ if(w.startsWith("-")&&w.length>1) exclude.push(w.slice(1)); else if(w) terms.push(w); });
-  return {terms, exclude};
+  const terms=[], exclude=[]; let max_price=null;
+  raw.trim().split(/\s+/).forEach(w=>{
+    const b=w.match(/^<\$?([\d,]+)k?$/i);
+    if(b){ let v=+b[1].replace(/,/g,""); if(/k$/i.test(w)) v*=1000; if(v>0) max_price=v; }
+    else if(w.startsWith("-")&&w.length>1) exclude.push(w.slice(1));
+    else if(w) terms.push(w);
+  });
+  return {terms, exclude, max_price};
 }
 
 async function loadState(){
@@ -206,7 +217,8 @@ async function loadState(){
     $("#watch-chips").innerHTML = s.watches.length ? s.watches.map(w=>{
       const ref = w.terms.slice(1).join(" ");
       const ex = w.exclude.length ? ` <span style="color:var(--faint)">−${esc(w.exclude.join(" "))}</span>`:"";
-      return `<span class="chip"><span class="name">${esc(w.terms[0]||w.label)}</span>${ref?`<span class="ref">${esc(ref)}</span>`:""}${ex}<button class="chart" title="price history" onclick="openPrices(${w.id})">$</button><button class="x" title="remove" onclick="delWatch(${w.id})">×</button></span>`;
+      const cap = w.max_price ? ` <span class="cap-tag" title="only alert under this price">≤$${Math.round(w.max_price).toLocaleString()}</span>`:"";
+      return `<span class="chip"><span class="name">${esc(w.terms[0]||w.label)}</span>${ref?`<span class="ref">${esc(ref)}</span>`:""}${ex}${cap}<button class="chart" title="price history" onclick="openPrices(${w.id})">$</button><button class="x" title="remove" onclick="delWatch(${w.id})">×</button></span>`;
     }).join("") : `<p class="empty">No watches yet. Add a model or reference below to start hunting.</p>`;
     // users
     $("#user-chips").innerHTML = s.users.length ? s.users.map(u=>
@@ -220,11 +232,14 @@ async function loadAlerts(){
     const a = await api("/api/alerts?limit=40");
     $("#alert-count").textContent = a.length ? `${a.length} shown` : "";
     $("#feed").innerHTML = a.length ? a.map(x=>{
-      const label = x.kind==="user"?"Followed user":(x.kind==="both"?"Watch + user":"Watch match");
+      const label = x.kind==="deal"?"Deal":(x.kind==="user"?"Followed user":(x.kind==="both"?"Watch + user":"Watch match"));
+      const deal = x.deal_pct ? `<span class="deal-badge">🔥 ~${Math.round(x.deal_pct)}% under median</span>`:"";
+      const priceTxt = x.price ? esc(x.price) : (x.price_val?`~$${Math.round(x.price_val).toLocaleString()}`:"");
+      const med = x.market_median?`<span class="sep">·</span><span class="med">median $${Math.round(x.market_median).toLocaleString()}</span>`:"";
       return `<article class="alert ${x.kind}">
-        <span class="reason ${x.kind}">● ${label}</span>
+        <span class="reason ${x.kind}">● ${label}</span>${deal}
         <h3><a href="${esc(x.link)}" target="_blank" rel="noopener">${esc(x.title)}</a></h3>
-        <div class="meta"><span>u/${esc(x.author)}</span>${x.price?`<span class="sep">·</span><span class="price">${esc(x.price)}</span>`:""}<span class="sep">·</span><span>${ago(x.ts)}</span></div>
+        <div class="meta"><span>u/${esc(x.author)}</span>${priceTxt?`<span class="sep">·</span><span class="price">${priceTxt}</span>`:""}${med}<span class="sep">·</span><span>${ago(x.ts)}</span></div>
       </article>`;
     }).join("") : `<div class="feed-empty">No alerts yet. When a matching watch or a followed user posts, it shows here — and pings your Discord.</div>`;
   }catch(e){}
@@ -232,8 +247,8 @@ async function loadAlerts(){
 
 async function addWatch(){
   const inp=$("#watch-input"), raw=inp.value.trim(); if(!raw) return;
-  const {terms,exclude}=parseWatch(raw);
-  try{ await api("/api/watches",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({terms,exclude})}); inp.value=""; toast("Watch added — live from the next check.","ok"); loadState(); }
+  const {terms,exclude,max_price}=parseWatch(raw);
+  try{ await api("/api/watches",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({terms,exclude,max_price})}); inp.value=""; toast("Watch added — live from the next check.","ok"); loadState(); }
   catch(e){ toast(e.message,"err"); }
 }
 async function delWatch(id){ try{ await api(`/api/watches/${id}`,{method:"DELETE"}); loadState(); }catch(e){ toast(e.message,"err"); } }

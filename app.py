@@ -51,12 +51,13 @@ NOTIFY_ON_FIRST_RUN = os.environ.get("NOTIFY_ON_FIRST_RUN", "false").lower() == 
 PRICE_SINCE = os.environ.get("PRICE_SINCE", "2025-01-01")   # earliest month to chart
 PRICE_CACHE_TTL = int(os.environ.get("PRICE_CACHE_TTL_SECONDS", "43200"))  # 12h
 PRICE_MAX_PAGES = int(os.environ.get("PRICE_MAX_PAGES", "6"))   # pullpush pages (100 each) per lookup
+DEAL_THRESHOLD_PCT = float(os.environ.get("DEAL_THRESHOLD_PCT", "12"))  # flag listings this % under median
 PULLPUSH_API = "https://api.pullpush.io/reddit/search/submission/"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-7s  %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("tracker")
 
-COLOR = {"watch": 3066993, "user": 3447003, "both": 15844367}
+COLOR = {"watch": 3066993, "user": 3447003, "both": 15844367, "deal": 13215543}   # deal = gold
 
 _state = {"last_poll": None, "last_error": None}
 
@@ -89,6 +90,13 @@ def init_db():
             price TEXT, reason TEXT, kind TEXT, ts REAL);
         CREATE TABLE IF NOT EXISTS price_cache (k TEXT PRIMARY KEY, ts REAL, json TEXT);
         """)
+        for table, col, decl in (("watches", "max_price", "REAL"),
+                                 ("alerts", "price_val", "REAL"),
+                                 ("alerts", "market_median", "REAL"),
+                                 ("alerts", "deal_pct", "REAL")):
+            have = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
+            if col not in have:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     log.info("DB ready at %s", DB_PATH)
 
 
@@ -97,10 +105,12 @@ def load_watches():
         rows = c.execute("SELECT * FROM watches ORDER BY created").fetchall()
     out = []
     for r in rows:
+        keys = r.keys()
         out.append({
             "id": r["id"], "label": r["label"],
             "terms": json.loads(r["terms"] or "[]"),
             "exclude": json.loads(r["exclude"] or "[]"),
+            "max_price": (r["max_price"] if "max_price" in keys else None),
         })
     return out
 
@@ -148,7 +158,18 @@ def price_of(text):
     m = PRICE_RE.search(text or ""); return m.group(0).replace(" ", "") if m else None
 
 
-def match_watches(title, body, watches):
+def flair_of(entry):
+    # Reddit RSS puts the post's link flair (e.g. "$9000-$11999") in entry.tags as a
+    # category term. Return the one that looks like a price-range flair, if any.
+    for t in getattr(entry, "tags", []) or []:
+        term = (getattr(t, "term", None) or (t.get("term") if isinstance(t, dict) else None) or "")
+        if FLAIR_RANGE_RE.search(term) or FLAIR_PLUS_RE.search(term):
+            return term
+    return None
+
+
+def watch_hits(title, body, watches):
+    # Full matched watch dicts (so callers can read max_price/terms for deal scoring).
     if REQUIRE_TAGS and not any(t in tags_of(title) for t in REQUIRE_TAGS):
         return []
     hay = (title + " " + re.sub("<[^>]+>", " ", body)).lower()
@@ -156,8 +177,12 @@ def match_watches(title, body, watches):
     for w in watches:
         terms = [t.lower() for t in w["terms"]]
         if terms and all(t in hay for t in terms) and not any(x.lower() in hay for x in w["exclude"]):
-            hits.append(w["label"])
+            hits.append(w)
     return hits
+
+
+def match_watches(title, body, watches):
+    return [w["label"] for w in watch_hits(title, body, watches)]
 
 
 # ----------------------------------------------------------------------------- price history
@@ -281,12 +306,17 @@ def price_series(watch, force=False):
                "min": round(min(v)), "max": round(max(v))}
               for lbl, v in sorted(buckets.items())]
     total = sum(len(v) for v in buckets.values())
+    # A single "market median" for deal-scoring: median over the most recent ≤3 months'
+    # monthly medians, so a one-off spike month doesn't skew the bargain threshold.
+    recent = [p["median"] for p in points[-3:]]
+    market_median = round(_median(recent)) if recent else None
 
     result = {
         "label": watch["label"], "terms": terms, "since": PRICE_SINCE,
         "source": "r/WatchExchange price-range flair (midpoint), via pullpush.io",
         "note": "Asking prices from listings — not verified sold prices.",
         "points": points, "listings": total, "scanned": scanned, "truncated": truncated,
+        "market_median": market_median,
         "generated": time.time(), "cached": False, "stale": False,
     }
     if points:
@@ -309,8 +339,28 @@ def price_series(watch, force=False):
     return result
 
 
+def _watch_key(watch):
+    tl = [t.lower() for t in watch["terms"]]
+    exclude = [x.lower() for x in watch.get("exclude", [])]
+    return "||".join(sorted(tl)) + "##" + "|".join(sorted(exclude))
+
+
+def cached_market_median(watch):
+    # The model's market median from the price cache ONLY — never triggers a fetch, so the
+    # poll loop stays fast and never hits pullpush. Returns None until the chart is warmed
+    # (open the $ chart once, or add_watch warms it in the background).
+    with db() as c:
+        row = c.execute("SELECT json FROM price_cache WHERE k=?", (_watch_key(watch),)).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row["json"]).get("market_median")
+    except Exception:
+        return None
+
+
 # ----------------------------------------------------------------------------- discord
-def send_discord(entry, reasons, kind):
+def send_discord(entry, reasons, kind, est=None, market_median=None, deal_pct=0.0):
     if not DISCORD_WEBHOOK_URL:
         log.error("No DISCORD_WEBHOOK_URL set — cannot send."); return False
     title = getattr(entry, "title", "(no title)")
@@ -319,6 +369,9 @@ def send_discord(entry, reasons, kind):
     fields = [{"name": "Why", "value": "\n".join(reasons), "inline": False},
               {"name": "Author", "value": f"u/{author_of(entry)}", "inline": True}]
     if price: fields.append({"name": "Price", "value": price, "inline": True})
+    elif est: fields.append({"name": "Est. asking", "value": f"~${est:,.0f}", "inline": True})
+    if market_median:
+        fields.append({"name": "Market median", "value": f"${market_median:,.0f}", "inline": True})
     embed = {"title": title[:250], "url": getattr(entry, "link", ""), "color": COLOR[kind],
              "fields": fields,
              "timestamp": datetime.fromtimestamp(time_of(entry), tz=timezone.utc).isoformat(),
@@ -335,13 +388,15 @@ def send_discord(entry, reasons, kind):
     return False
 
 
-def record_alert(entry, reasons, kind):
+def record_alert(entry, reasons, kind, est=None, market_median=None, deal_pct=0.0):
     with db() as c:
-        c.execute("INSERT INTO alerts (post_id,title,link,author,price,reason,kind,ts) VALUES (?,?,?,?,?,?,?,?)",
+        c.execute("INSERT INTO alerts (post_id,title,link,author,price,reason,kind,ts,"
+                  "price_val,market_median,deal_pct) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                   (getattr(entry, "id", "") or getattr(entry, "link", ""),
                    getattr(entry, "title", ""), getattr(entry, "link", ""),
                    author_of(entry), price_of(getattr(entry, "title", "")) or price_of(body_of(entry)),
-                   " · ".join(reasons), kind, time_of(entry)))
+                   " · ".join(reasons), kind, time_of(entry),
+                   est, market_median, (round(deal_pct, 1) if deal_pct else None)))
         c.execute("DELETE FROM alerts WHERE id NOT IN (SELECT id FROM alerts ORDER BY ts DESC LIMIT 200)")
 
 
@@ -375,16 +430,41 @@ def scan_once(suppress=False):
             with db() as c: c.execute("INSERT OR IGNORE INTO seen VALUES (?,?)", (pid, time.time()))
             continue
         title, body = getattr(entry, "title", "") or "", body_of(entry)
-        reasons, followed, matched = [], author_of(entry).lower() in user_set, match_watches(title, body, watches)
+        followed = author_of(entry).lower() in user_set
+        hits = watch_hits(title, body, watches)
+
+        # Effective asking price for this listing (precise title price, or flair midpoint).
+        flair = flair_of(entry)
+        est = listing_price(title, body, flair)
+
+        # Per-watch budget: drop matches whose asking price is over that watch's cap.
+        # (Keep matches with no price estimate — better to over-alert than miss silently.)
+        kept = [w for w in hits if not (w.get("max_price") and est and est > w["max_price"])]
+
+        # Deal score: compare est to the best (highest) market median among matched models,
+        # so a real bargain on ANY matched model still flags. Cached medians only — no fetch.
+        best_pct, best_med = 0.0, None
+        for w in kept:
+            med = cached_market_median(w)
+            if med and est and est < med:
+                pct = (med - est) / med * 100.0
+                if pct > best_pct:
+                    best_pct, best_med = pct, med
+        is_deal = best_pct >= DEAL_THRESHOLD_PCT
+
+        reasons = []
         if followed: reasons.append(f"👤 Followed user u/{author_of(entry)}")
-        if matched: reasons.append("🎯 " + ", ".join(matched))
+        if kept: reasons.append("🎯 " + ", ".join(w["label"] for w in kept))
+        if is_deal:
+            reasons.append(f"🔥 ~{round(best_pct)}% under median (${best_med:,.0f})")
+
         if reasons:
-            kind = "both" if (followed and matched) else ("user" if followed else "watch")
+            kind = "deal" if is_deal else ("both" if (followed and kept) else ("user" if followed else "watch"))
             if suppress:
                 log.info("[priming] would alert: %s", title[:70])
             else:
-                if send_discord(entry, reasons, kind):
-                    record_alert(entry, reasons, kind); sent += 1
+                if send_discord(entry, reasons, kind, est, best_med, best_pct):
+                    record_alert(entry, reasons, kind, est, best_med, best_pct); sent += 1
                     log.info("ALERT: %s", title[:70])
         with db() as c:
             c.execute("INSERT OR IGNORE INTO seen VALUES (?,?)", (pid, time.time()))
@@ -500,10 +580,26 @@ def add_watch():
     if not terms: return jsonify({"error": "Enter at least one term, e.g. 'submariner 16610'."}), 400
     label = (d.get("label") or " ".join(terms)).strip()
     exclude = d.get("exclude") or []
+    try:
+        max_price = float(d["max_price"]) if d.get("max_price") not in (None, "") else None
+    except (TypeError, ValueError):
+        max_price = None
     with db() as c:
-        c.execute("INSERT INTO watches (label,terms,exclude,created) VALUES (?,?,?,?)",
-                  (label, json.dumps(terms), json.dumps(exclude), time.time()))
+        cur = c.execute("INSERT INTO watches (label,terms,exclude,created,max_price) VALUES (?,?,?,?,?)",
+                        (label, json.dumps(terms), json.dumps(exclude), time.time(), max_price))
+        wid = cur.lastrowid
+    # Warm the price cache so deal-scoring has a market median without waiting for the
+    # user to open the chart. Best-effort, off the request thread.
+    watch = {"id": wid, "label": label, "terms": terms, "exclude": exclude, "max_price": max_price}
+    threading.Thread(target=lambda: _safe_warm(watch), daemon=True).start()
     return jsonify({"ok": True})
+
+
+def _safe_warm(watch):
+    try:
+        price_series(watch)
+    except Exception as e:
+        log.warning("cache warm failed for %s: %s", watch.get("label"), e)
 
 
 @app.route("/api/watches/<int:wid>", methods=["DELETE"])
