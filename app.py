@@ -43,6 +43,10 @@ POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "120"))
 REQUIRE_TAGS = [t.strip().upper() for t in os.environ.get("WATCH_REQUIRE_TAGS", "WTS,WTT").split(",") if t.strip()]
 MAX_AGE_MIN = int(os.environ.get("MAX_POST_AGE_MINUTES", "720"))
 SCAN_USER_FEEDS = os.environ.get("SCAN_FOLLOWED_USER_FEEDS", "true").lower() == "true"
+# A followed user's post lands in /new too, so /new is the fast path for them. The slower,
+# more-throttled per-user feeds only backstop posts that scrolled out of /new — scan them
+# every Nth cycle instead of every cycle so they don't drag out each poll.
+USER_FEED_EVERY = max(1, int(os.environ.get("USER_FEED_EVERY_CYCLES", "5")))
 USER_AGENT = os.environ.get("USER_AGENT", "watchexchange-tracker/1.0 (personal RSS notifier)")
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")          # if set, the UI requires it
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "tracker.db"))
@@ -128,9 +132,14 @@ IMG_RE = re.compile(r'<img[^>]+src="([^"]+)"', re.I)
 
 def fetch_feed(url):
     try:
-        r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=20)
+        # A changing "_" param busts Reddit's edge cache so we're less likely to get a
+        # stale copy that's missing the newest posts.
+        r = requests.get(url, headers={"User-Agent": USER_AGENT},
+                         params={"_": int(time.time())}, timeout=20)
         if r.status_code == 429:
-            log.warning("Rate-limited (429): %s", url); time.sleep(30); return []
+            # Don't block the whole cycle sleeping — just skip this feed. The next poll
+            # (POLL_INTERVAL later) retries, and every feed queued behind it stays on time.
+            log.warning("Rate-limited (429), skipping this cycle: %s", url); return []
         if r.status_code != 200:
             log.warning("Feed %s -> HTTP %s", url, r.status_code); return []
         return feedparser.parse(r.content).entries
@@ -401,9 +410,11 @@ def record_alert(entry, reasons, kind, est=None, market_median=None, deal_pct=0.
 
 
 # ----------------------------------------------------------------------------- poll cycle
-def iter_entries(users):
+def iter_entries(users, scan_users=True):
+    # /new catches everything fresh — including followed users, whose posts show up here
+    # too and get matched by author in scan_once. This is the fast path every cycle.
     yield from fetch_feed(f"https://www.reddit.com/r/{SUBREDDIT}/new/.rss?limit=50")
-    if SCAN_USER_FEEDS:
+    if SCAN_USER_FEEDS and scan_users:
         sub = SUBREDDIT.lower()
         for u in users:
             time.sleep(1)
@@ -421,7 +432,9 @@ def scan_once(suppress=False):
     max_age = MAX_AGE_MIN * 60
     now = time.time()
     sent = 0
-    for entry in iter_entries(users):
+    _state["cycle"] = _state.get("cycle", 0) + 1
+    scan_users = (_state["cycle"] % USER_FEED_EVERY == 0)   # backstop only every Nth cycle
+    for entry in iter_entries(users, scan_users):
         pid = getattr(entry, "id", None) or getattr(entry, "link", None)
         if not pid: continue
         with db() as c:
